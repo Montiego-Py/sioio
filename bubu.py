@@ -4,67 +4,79 @@ import json
 import requests
 import os
 from concurrent.futures import ThreadPoolExecutor
+import threading
+import traceback
 
+# ---------------- CONFIG ----------------
 TOKEN = "8271499993:AAHP8Ji5NbXNnqv52EXyie8jFWXZSTNn5iQ"
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, parse_mode=None)
 
 KANAL_ID = -1002448652443
 GRUP_ID = -1002283497071
 
-otp = 1907
-
-token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiI5MDUzMjI2MDA1NDUiLCJsaW5lVHlwZSI6IklORElWSURVQUxfUE9TVFBBSUQiLCJvc1R5cGUiOiJVTktOT1dOIiwibXNpc2RuIjoiOTA1MzIyNjAwNTQ1IiwidHlwZSI6IlBFRVIiLCJleHAiOjE3ODg1NDU3MzUsIm9wZXJhdG9yIjoiVk9EQUZPTkUifQ.w5MH1VxIMuD2786czYc-_cCsz2J-R7tHhBERxQPVyCrqX2hNt0j4KQ-FyAce57oO-2md1GvfSwcXVSMGIdjTHvqgEhF58avyEB3Xpi5K84QMSRNkA4qHNPAC0b0Ehiiagr6XMV_yZgr988cMWRrW9jkYjA3jfms_OD7drmuJUCDpG7ig1bue04uMl_-7_VTrcx5K2iDxd6wYxsSRVnbQsM23diPB8JOGTo-a3mVHToiE7ATt5T_BzgDI7BDZLQZOsC2GbTfCtKZekU0V1fgY7b8h-zfOXGsD6LZeNIVKnSBUmrAAlVHStVqaLGkLUIHbPSZe4PW7-CDHAFc8dpn48g"
+# API / OTP
+otp = 1234
+token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiI5MDUzNjk5MjI2ODYiLCJsaW5lVHlwZSI6IklORElWSURVQUxfUE9TVFBBSUQiLCJvc1R5cGUiOiJVTktOT1dOIiwibXNpc2RuIjoiOTA1MzY5OTIyNjg2IiwidHlwZSI6IlBFRVIiLCJleHAiOjE3ODg4Mjc5NjEsIm9wZXJhdG9yIjoiVFVSS0NFTEwifQ.RPM1Fe-le3iCisxNc2vWkbs-mMBNmN4C9-0SdCCIb4N-VCXhnxYLUSkOYB8YCp4FFDfGArLZyDffAsVKxbMXf3_-UBtCB9A17tD22lcx4OEuxzfiT_rf5t1jmMr7kCwG8Dq-tCMQZSpI0r01KLRxHJR4vm4jF_IWF9QTwdFsKomjLPgLGcc-fuQnddgCcxe9mRUcSs_KyeqWqCFdD9ZZHKDUkn1s-udY5fs4wFx1krXytGNnhPiKF8yK_LSFpvc-gzf3oTqYml_y_MosLB59B3S5uo78CvnBb-4fDypGnUoY2OBpZNIxrVBhsBAoLv_VnapaHOafYTfgFD_q7gQclA"
 
 KANAL_LINK = "https://t.me/+Z1dFrv0CPilmOWZk"
 GRUP_LINK = "https://t.me/+Nz8aUaZeF-E2ZmM0"
 
 ADMIN_ID = 7927763999
 
-USER_DATA_FILE = "users.json"
+USER_DATA_FILE = "userrs.json"
 
-# Thread havuzu oluştur
-# Maksimum 10 eşzamanlı görev çalıştırabilir. Bu değeri ihtiyaca göre ayarlayabilirsiniz.
 executor = ThreadPoolExecutor(max_workers=10)
 
+# ---------- concurrency helpers ----------
+user_locks = {}
+user_locks_lock = threading.Lock()
+
+
+def get_user_lock(user_id_str):
+    with user_locks_lock:
+        if user_id_str not in user_locks:
+            user_locks[user_id_str] = threading.Lock()
+        return user_locks[user_id_str]
+
+
+# ---------- persist helpers ----------
 def load_user_data():
     if os.path.exists(USER_DATA_FILE):
-        with open(USER_DATA_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
+
 def save_user_data(data):
-    with open(USER_DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print("Kullanıcı verisi kaydedilemedi:", e)
 
-kullanicilar = load_user_data()
 
+kullanicilar = load_user_data()  # keys are strings
+
+
+# ---------- membership check ----------
 def kullanici_kontrol(user_id):
     try:
+        # bot.get_chat_member accepts numeric chat id or username
         kanal = bot.get_chat_member(KANAL_ID, user_id)
         grup = bot.get_chat_member(GRUP_ID, user_id)
-
-        if kanal.status in ["member", "administrator", "creator"] and \
-           grup.status in ["member", "administrator", "creator"]:
-            return True
-        else:
-            return False
+        kanal_ok = kanal.status in ["member", "administrator", "creator"]
+        grup_ok = grup.status in ["member", "administrator", "creator"]
+        return kanal_ok and grup_ok
     except Exception as e:
-        print(f"Kanal/Grup kontrol hatası: {e}")
+        # Hata: örn. bot admin değil, veya kullanıcı yoksa
+        print("kullanici_kontrol hata:", e)
         return False
 
-@bot.message_handler(commands=["start"])
-def start_mesaj(m):
-    user_id_str = str(m.from_user.id)
-    if user_id_str in kullanicilar and kullanicilar[user_id_str].get("status") == "SENT":
-        bot.reply_to(m, "❌ Zaten FreeByte hakkınızı kullandınız.")
-        return
 
-    if kullanici_kontrol(m.from_user.id):
-        msg = bot.reply_to(m, "📱 Telefon numaranı gir (örnek: 5451234567):")
-        bot.register_next_step_handler(msg, telefon_al)
-    else:
-        kontrol_butonu_gonder(m.chat.id)
-
+# ---------- UI: kontrol butonu ----------
 def kontrol_butonu_gonder(chat_id):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📢 Kanala Katıl", url=KANAL_LINK))
@@ -77,24 +89,169 @@ def kontrol_butonu_gonder(chat_id):
         parse_mode="Markdown"
     )
 
+
+# ---------- /start ----------
+@bot.message_handler(commands=["start"], chat_types=['private'])
+def start_mesaj(m):
+    user_id = m.from_user.id
+    user_id_str = str(user_id)
+    lock = get_user_lock(user_id_str)
+
+    with lock:
+        current = kullanicilar.get(user_id_str, {})
+        status = current.get("status")
+
+        if status == "SENT":
+            bot.reply_to(m, "❌ Kullanım limitin doldu. Tekrar kullanamazsın.")
+            return
+        if status == "PENDING":
+            bot.reply_to(m, "⏳ İşleminiz sürüyor. Lütfen bekleyin.")
+            return
+        if status == "AWAITING_PHONE":
+            bot.reply_to(m, "📱 Önceki isteğiniz tamamlanmadı. Lütfen telefon numaranızı gönderin.")
+            return
+
+        # membership kontrol
+        if kullanici_kontrol(user_id):
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE"}
+            save_user_data(kullanicilar)
+            bot.send_message(user_id, "📱 Telefon numaranı gir (örnek: 5451234567):")
+            # artık mesajları global handler ile yakalayacağız
+        else:
+            kontrol_butonu_gonder(m.chat.id)
+
+
+# ---------- callback (kontrol butonu) ----------
 @bot.callback_query_handler(func=lambda call: call.data == "kontrol")
 def kontrol_buton(call):
-    if kullanici_kontrol(call.from_user.id):
-        msg = bot.send_message(call.message.chat.id, "📱 Telefon numaranı gir (örnek: 5451234567):")
-        bot.register_next_step_handler(msg, telefon_al)
-    else:
-        kontrol_butonu_gonder(call.message.chat.id)
+    user_id = call.from_user.id
+    user_id_str = str(user_id)
+    lock = get_user_lock(user_id_str)
 
-def _freebytegonder_task(user_id, no, geciciotpp):
-    url = "https://utxk52xqxk.execute-api.eu-west-1.amazonaws.com/beta/transactions"
-    
-    payload = {
+    with lock:
+        current = kullanicilar.get(user_id_str, {})
+        status = current.get("status")
+
+        if status == "SENT":
+            bot.answer_callback_query(call.id, "❌ Kullanım limitin doldu.")
+            return
+        if status == "PENDING":
+            bot.answer_callback_query(call.id, "⏳ İşleminiz sürüyor.")
+            return
+        if status == "AWAITING_PHONE":
+            bot.answer_callback_query(call.id, "📱 Telefon numaranızı giriniz.")
+            return
+
+        # tekrar kontrol
+        if kullanici_kontrol(user_id):
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE"}
+            save_user_data(kullanicilar)
+            bot.answer_callback_query(call.id, "✅ Üyelik gözüküyor. Lütfen telefon numaranızı gönderin.")
+            bot.send_message(call.message.chat.id, "📱 Telefon numaranı gir (örnek: 5451234567):")
+        else:
+            bot.answer_callback_query(call.id, "❌ Hala katılmadığınız gözüküyor. Kanala/gruba katılın ve tekrar kontrol edin.")
+            kontrol_butonu_gonder(call.message.chat.id)
+
+
+# ---------- GLOBAL PRIVATE MESSAGE HANDLER ----------
+# Burada özel sohbette gelen tüm metinleri yakalayıp duruma göre işliyoruz.
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and m.text is not None, content_types=['text'])
+def private_text_handler(m):
+    user_id = m.from_user.id
+    user_id_str = str(user_id)
+    text = m.text.strip()
+
+    lock = get_user_lock(user_id_str)
+    with lock:
+        status = kullanicilar.get(user_id_str, {}).get("status")
+
+        # Eğer kullanıcı telefon beklemede ise -> işle
+        if status == "AWAITING_PHONE":
+            telefon_al(m)  # telefon_al, gelen mesaj objesini kullanır
+            return
+
+        # Eğer kullanıcı hiç /start yapmamışsa veya başka metin atmışsa
+        # cevap ver (opsiyonel)
+        if text.startswith("/"):
+            # komut zaten handled ediliyor (/start vb.)
+            return
+        else:
+            bot.reply_to(m, "👋 FreeByte almak için önce /start yazın ve yönergeleri izleyin.")
+
+
+# ---------- telefon_al (doğrulayıcı) ----------
+def telefon_al(m):
+    try:
+        user_id = m.from_user.id
+        user_id_str = str(user_id)
+        no = m.text.strip()
+
+        # Basit numara doğrulama: 10 hane (başında 0/5 kabul etmiyoruz; örnek: 5451234567)
+        if not no.isdigit() or len(no) != 10:
+            bot.reply_to(m, "❌ Geçersiz numara. Lütfen 10 haneli numara gir (örnek: 5451234567).")
+            # durum AWATING_PHONE kalır, kullanıcı tekrar girebilir
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE"}
+            save_user_data(kullanicilar)
+            return
+
+        # Kullaniciyi PENDING yap ve işlemi başlat
+        kullanicilar[user_id_str] = {"status": "PENDING", "phone": no}
+        save_user_data(kullanicilar)
+
+        bot.reply_to(m, "⏳ İşleminiz başlatıldı, lütfen bekleyiniz...")
+        executor.submit(freebytegonder_task, m.chat.id, no, user_id_str)
+    except Exception as e:
+        print("telefon_al hata:", e)
+        traceback.print_exc()
+        bot.reply_to(m, "⚠️ Bir hata oluştu. Lütfen tekrar deneyin.")
+        # Güvenli duruma al
+        kullanicilar[user_id_str] = {"status": "AWAITING_PHONE"}
+        save_user_data(kullanicilar)
+
+
+# ---------- gecici OTP alma (güvenli) ----------
+def geciciotp():
+    try:
+        url = "https://3uptzlakwi.execute-api.eu-west-1.amazonaws.com/api/user/pin/get-otp"
+        payload = {"pin": otp}
+        headers = {
+            'Authorization': "Bearer " + token,
+            'Content-Type': "application/json"
+        }
+        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        resp = r.json()
+        if resp.get("otp"):
+            return resp["otp"]
+        else:
+            print("geciciotp: otp yok, cevap:", resp)
+            return None
+    except Exception as e:
+        print("geciciotp hata:", e)
+        return None
+
+
+# ---------- freebyte gönderme işlemi ----------
+def freebytegonder_task(chat_id, no, user_id_str):
+    try:
+        # önce OTP al
+        otp_code = geciciotp()
+        if not otp_code:
+            #bot.send_message(chat_id, "❌ OTP alınamadı. Lütfen tekrar deneyin veya daha sonra tekrar deneyin.")
+            # kullanıcıyı tekrar telefon bekleme durumuna al (izin ver tekrar denesin)
+            bot.send_message(chat_id, "Ciddi sorun var Admine Bildirildi. tekrar dene belki sorun Çözülür")
+            bot.send_message(ADMIN_ID, "Ciddi sorun var hesap pın.")
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE", "phone": no}
+            save_user_data(kullanicilar)
+            return
+
+        url = "https://utxk52xqxk.execute-api.eu-west-1.amazonaws.com/beta/transactions"
+        payload = {
       "amount": "500",
       "toMsisdn": f"90{no}",
-      "pinOtp": geciciotpp
+      "pinOtp": otp_code
     }
     
-    headers = {
+        headers = {
       'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
       'Accept': "application/json, text/plain, */*",
       'Content-Type': "application/json",
@@ -109,151 +266,66 @@ def _freebytegonder_task(user_id, no, geciciotpp):
       'referer': "https://www.1gb.app/",
       'accept-language': "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
     }
-    
-    user_id_str = str(user_id)
-    try:
-        response = requests.post(url, data=json.dumps(payload), headers=headers).json()
-        print(f"FreeByte Gönderim Yanıtı: {response}")
 
-        if "transactionId" in response:
-            bot.send_message(user_id, "✅ FreeByte başarıyla hattınıza 500 FreeByte gönderildi!\nSahip: @EbediTaht")
-            bot.send_message(ADMIN_ID, f"🎉 Kullanıcı {user_id} ({no}) FreeByte gönderimi başarılı! Transaction ID: {response['transactionId']}")
-            kullanicilar[user_id_str]["status"] = "SENT"
+        r = requests.post(url, json=payload, headers=headers, timeout=20)
+        try:
+            resp_json = r.json()
+        except Exception:
+            resp_json = {}
+
+        # API limiti bitti
+        if resp_json.get("code") == "insufficient-balance":
+            bot.send_message(chat_id, "❌ Maalesef, botun FreeByte gönderme limiti dolmuş. Lütfen daha sonra tekrar deneyin.")
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE", "phone": no}
             save_user_data(kullanicilar)
-        elif response.get("code") == "insufficient-balance":
-            bot.send_message(user_id, "❌ Maalesef, botun FreeByte gönderme limiti dolmuş. Lütfen daha sonra tekrar deneyin.")
-            bot.send_message(ADMIN_ID, f"⚠️ Kullanıcı {user_id} ({no}) için FreeByte gönderme başarısız. Neden: Botun limiti dolmuş.")
+            # opsiyonel: admin'e bildir
+            try:
+                bot.send_message(ADMIN_ID, f"⚠️ insufficient-balance uyarısı: kullanıcı {user_id_str} numara {no}")
+            except Exception:
+                pass
+            return
+
+        # pin-required gibi hata
+        if resp_json.get("code") == "pin-required":
+            bot.send_message(chat_id, "⚠️ Şifre/OTP ile ilgili bir sorun oluştu. Tekrar deneyin.")
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE", "phone": no}
+            save_user_data(kullanicilar)
+            return
+
+        # başarılı mı?
+        if resp_json.get("code") == "wrong_pin":
+        	bot.send_message(chat_id, "Ciddi sorun var Admine Bildirildi. tekrar dene belki sorun Çözülür")
+        	bot.send_message(ADMIN_ID, "Ciddi sorun var hesap pın.")
+        if r.status_code == 200 and (resp_json.get("transactionId") or resp_json.get("status") == "success"):
+            bot.send_message(chat_id, "✅ İşlem başarılı! 500 FreeByte gönderildi.")
+            kullanicilar[user_id_str] = {"status": "SENT", "phone": no}
+            save_user_data(kullanicilar)
+            try:
+                bot.send_message(ADMIN_ID, f"🎉 FreeByte gönderildi: kullanıcı {user_id_str} numara {no} -> {resp_json}")
+            except Exception:
+                pass
+            return
         else:
-            bot.send_message(user_id, "❌ FreeByte gönderilirken beklenmedik bir hata oluştu. Lütfen tekrar deneyin veya admin ile iletişime geçin.")
-            bot.send_message(ADMIN_ID, f"🚨 Kullanıcı {user_id} ({no}) için FreeByte gönderiminde ciddi bir hata oluştu: {response}")
-    except requests.exceptions.RequestException as e:
-        bot.send_message(user_id, "❌ Sunucuya bağlanırken bir sorun oluştu. Lütfen daha sonra tekrar deneyin.")
-        bot.send_message(ADMIN_ID, f"🚨 FreeByte gönderme isteği sırasında ağ hatası oluştu: {e} - Kullanıcı: {user_id} ({no})")
-    except json.JSONDecodeError:
-        bot.send_message(user_id, "❌ Sunucudan geçersiz bir yanıt alındı. Lütfen daha sonra tekrar deneyin.")
-        bot.send_message(ADMIN_ID, f"🚨 FreeByte gönderme isteği sonrası JSON çözümleme hatası: Kullanıcı: {user_id} ({no})")
+            # başarısız detayını kullanıcıya gösterme (güvenlik), ama debugte konsola bas
+            print("freebyte başarısız:", r.status_code, resp_json)
+            bot.send_message(chat_id, "❌ İşlem başarısız oldu. Lütfen daha sonra tekrar deneyin.")
+            kullanicilar[user_id_str] = {"status": "AWAITING_PHONE", "phone": no}
+            save_user_data(kullanicilar)
+            try:
+                bot.send_message(ADMIN_ID, f"🚨 FreeByte başarısız: kullanıcı {user_id_str} numara {no} -> {resp_json}")
+            except Exception:
+                pass
+            return
+
     except Exception as e:
-        bot.send_message(user_id, "❌ Beklenmedik bir hata oluştu. Lütfen daha sonra tekrar deneyin veya admin ile iletişime geçin.")
-        bot.send_message(ADMIN_ID, f"🚨 FreeByte gönderme işleminde genel hata: {e} - Kullanıcı: {user_id} ({no})")
-
-def freebytegonder(user_id, no, geciciotpp):
-    # İşlemi bir thread havuzuna gönder
-    executor.submit(_freebytegonder_task, user_id, no, geciciotpp)
-
-def _geciciotp_task(user_id, no):
-    url = "https://3uptzlakwi.execute-api.eu-west-1.amazonaws.com/api/user/pin/get-otp"
-    
-    payload = {
-      "pin": otp
-    }
-    
-    headers = {
-      'User-Agent': "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-      'Accept': "application/json, text/plain, */*",
-      'Content-Type': "application/json",
-      'sec-ch-ua': "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-      'sec-ch-ua-mobile': "?1",
-      'authorization': "Bearer " + token,
-      'sec-ch-ua-platform': "\"Android\"",
-      'origin': "https://www.1gb.app",
-      'sec-fetch-site': "cross-site",
-      'sec-fetch-mode': "cors",
-      'sec-fetch-dest': "empty",
-      'referer': "https://www.1gb.app/",
-      'accept-language': "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
-    
-    user_id_str = str(user_id)
-    try:
-        response = requests.post(url, data=json.dumps(payload), headers=headers).json()
-        print(f"OTP Alım Yanıtı: {response}")
-        
-        if response.get("otp"):
-            geciciotpsi = response["otp"]
-            print(geciciotpsi)
-            # FreeByte gönderme işlemini de ayrı bir thread'de başlat
-            freebytegonder(user_id, no, geciciotpsi)
-        else:
-            print(f"MALESEF FARKLI HATA (OTP): {response}")
-            bot.send_message(user_id, "❌ FreeByte gönderilirken bir sorun oluştu. Lütfen tekrar deneyin.")
-            bot.send_message(ADMIN_ID, f"🚨 Kullanıcı {user_id} ({no}) için OTP alımında hata oluştu: {response}")
-            if user_id_str in kullanicilar:
-                del kullanicilar[user_id_str]
-                save_user_data(kullanicilar)
-            
-    except requests.exceptions.RequestException as e:
-        bot.send_message(user_id, "❌ Sunucuya bağlanırken bir sorun oluştu. Lütfen daha sonra tekrar deneyin.")
-        bot.send_message(ADMIN_ID, f"🚨 OTP alım isteği sırasında ağ hatası oluştu: {e} - Kullanıcı: {user_id} ({no})")
-        if user_id_str in kullanicilar:
-            del kullanicilar[user_id_str]
-            save_user_data(kullanicilar)
-    except json.JSONDecodeError:
-        bot.send_message(user_id, "❌ Sunucudan geçersiz bir yanıt alındı. Lütfen daha sonra tekrar deneyin.")
-        bot.send_message(ADMIN_ID, f"🚨 OTP alım isteği sonrası JSON çözümleme hatası: Kullanıcı: {user_id} ({no})")
-        if user_id_str in kullanicilar:
-            del kullanicilar[user_id_str]
-            save_user_data(kullanicilar)
-    except Exception as e:
-        bot.send_message(user_id, "❌ Beklenmedik bir hata oluştu. Lütfen daha sonra tekrar deneyin.")
-        bot.send_message(ADMIN_ID, f"🚨 OTP alım işleminde genel hata: {e} - Kullanıcı: {user_id} ({no})")
-        if user_id_str in kullanicilar:
-            del kullanicilar[user_id_str]
-            save_user_data(kullanicilar)
-
-def geciciotp(user_id, no):
-    # İşlemi bir thread havuzuna gönder
-    executor.submit(_geciciotp_task, user_id, no)
+        print("freebytegonder_task exception:", e)
+        traceback.print_exc()
+        bot.send_message(chat_id, "⚠️ Beklenmedik bir hata oluştu. Lütfen daha sonra tekrar deneyin.")
+        kullanicilar[user_id_str] = {"status": "AWAITING_PHONE", "phone": no}
+        save_user_data(kullanicilar)
 
 
-def telefon_al(m):
-    user_id = m.from_user.id
-    tel = m.text.strip()
-    user_id_str = str(user_id)
-
-    if not tel.isdigit() or len(tel) != 10 or tel.startswith("90") or tel.startswith("+"):
-        msg = bot.reply_to(m, "❌ Geçersiz numara! Sadece 10 haneli gir (örnek: 5451234567):")
-        bot.register_next_step_handler(msg, telefon_al)
-        return
-
-    # Kullanıcıyı PENDING statüsünde kaydet ve kaydet
-    kullanicilar[user_id_str] = {"telefon": tel, "status": "PENDING"}
-    save_user_data(kullanicilar)
-    bot.reply_to(m, f"✅ Numaran kaydedildi: {tel}. FreeByte gönderiliyor...")
-
-    # Uzun sürebilecek OTP alma işlemini ayrı bir thread'de başlat
-    geciciotp(user_id, tel)
-
-@bot.message_handler(commands=["panel"])
-def admin_panel(m):
-    if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "❌ Bu komutu sadece admin kullanabilir!")
-        return
-
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👥 Kayıtlı Kullanıcı Sayısı", callback_data="say"))
-    markup.add(InlineKeyboardButton("📂 Kullanıcı Listesi", callback_data="liste"))
-
-    bot.send_message(m.chat.id, "🔐 Admin Paneli:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data in ["say", "liste"])
-def admin_islemleri(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Yetkin yok!")
-        return
-
-    if call.data == "say":
-        sent_users_count = sum(1 for user_data in kullanicilar.values() if user_data.get("status") == "SENT")
-        bot.send_message(call.message.chat.id, f"👥 Toplam FreeByte alan kullanıcı: {sent_users_count}")
-    elif call.data == "liste":
-        if kullanicilar:
-            text = "📂 Kayıtlı Kullanıcılar:\n"
-            for uid_str, user_data in kullanicilar.items():
-                telefon = user_data.get("telefon", "Bilinmiyor")
-                status = user_data.get("status", "Bilinmiyor")
-                text += f"• ID: {uid_str} | Tel: {telefon} | Durum: {status}\n"
-            bot.send_message(call.message.chat.id, text)
-        else:
-            bot.send_message(call.message.chat.id, "📂 Henüz kullanıcı yok.")
-
-print("Bot çalışıyor...")
-bot.infinity_polling()
+# ---------- startup ----------
+if __name__ == "__main__":
+    print("🤖 Bot çalışıyor...")
+    bot.infinity_polling(timeout=20, long_polling_timeout = 10)
